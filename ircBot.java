@@ -1,9 +1,7 @@
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
+import java.io.*;
+import java.time.LocalDateTime;
 import java.net.Socket;
 import java.util.Scanner;
 
@@ -14,6 +12,7 @@ public class ircBot {
     public static String realName;
     public static PrintWriter out;
     public static Scanner in;
+    private static final String LOG_DIR = "logs";
 
 
     public static void connect() throws IOException {
@@ -38,6 +37,14 @@ public class ircBot {
         write("NICK", nickname);
         write("USER", username+" 0 * :"+realName);
 
+        File logDir = new File(LOG_DIR);
+        if (!logDir.exists()) {
+            boolean created = logDir.mkdir();
+            if (!created) {
+                System.err.println("Failed to create logs directory");
+            }
+        }
+
         while(in.hasNext()) {
             String message = in.nextLine();
             System.out.println("<<<" + message);
@@ -54,7 +61,64 @@ public class ircBot {
                 if (!channel.startsWith("#")) {
                     channel = "#" + channel;
                 }
-                write("JOIN",channel);
+                write("JOIN", channel);
+                String finalChannel = channel;
+                new Thread(() -> {
+                    Scanner userInput = new Scanner(System.in);
+                    while (true) {
+                        String line = userInput.nextLine();
+                        if (line.startsWith("/join ")) {
+                            String newChannel = line.split(" ", 2)[1];
+                            if (!newChannel.startsWith("#")) {
+                                newChannel = "#" + newChannel;
+                            }
+                            write("JOIN", newChannel);
+                            System.out.println("Joined channel " + newChannel);
+                        }
+                        else if (line.equalsIgnoreCase("/part")) {
+                            write("PART", finalChannel);
+                            System.out.println("Left the channel " + finalChannel);
+                        }
+                        else if (line.equalsIgnoreCase("/quit")) {
+                            write("QUIT", ":Goodbye");
+                            System.exit(0);
+                        }
+                        else if (line.startsWith("/msg ")) {
+                            String[] tokens = line.split(" ", 3);
+                            String recipient = tokens[1];
+                            String privateMessage = tokens[2];
+                            write("PRIVMSG", recipient + " :" + privateMessage);
+                            System.out.println("Sent private message to " + recipient + ": " + privateMessage);
+                        }
+                        else {
+                            write("PRIVMSG " + finalChannel, ":" + line);
+                        }
+                    }
+                }).start();
+            }
+
+            if (message.contains("PRIVMSG")) {
+                String[] parts = message.split(" ", 4);
+                if (parts.length >= 4) {
+                    String sender = parts[0].substring(1, parts[0].indexOf("!"));
+                    String target = parts[2];
+                    String msgText = message.split(":", 3)[2];
+
+                    if (target.startsWith("#")) {
+                        String timestamp = java.time.LocalDateTime.now().toString();
+                        String logLine = String.format("[%s] <%s> %s", timestamp, sender, msgText);
+                        String fileName = LOG_DIR + "/log_" + target.substring(1) + ".txt";
+                        try (FileWriter fw = new FileWriter(fileName, true)) {
+                            fw.write(logLine + "\n");
+                        } catch (IOException e) {
+                            System.err.println("Error writing log: " + e.getMessage());
+                        }
+                    }
+                    else if (target.equalsIgnoreCase(nickname)) {
+                        System.out.println("Private message from " + sender + ": " + msgText);
+                    }
+
+                }
             }
         }
 
@@ -68,6 +132,24 @@ public class ircBot {
         System.out.println(serverMessage);
         out.print(serverMessage + "\r\n");
         out.flush();
+
+        if (command.equals("PRIVMSG")) {
+            String[] msgParts = message.split(" ", 2);
+            if (msgParts.length == 2) {
+                String target = msgParts[0];  // e.g., #testchannel
+                String text = msgParts[1].startsWith(":") ? msgParts[1].substring(1) : msgParts[1];
+                if (target.startsWith("#")) {
+                    String timestamp = java.time.LocalDateTime.now().toString();
+                    String logLine = String.format("[%s] <%s> %s", timestamp, nickname, text);
+                    String fileName = LOG_DIR + "/log_" + target.substring(1) + ".txt";
+                    try (FileWriter fw = new FileWriter(fileName, true)) {
+                        fw.write(logLine + "\n");
+                    } catch (IOException e) {
+                        System.err.println("Error logging sent message: " + e.getMessage());
+                    }
+                }
+            }
+        }
     }
 
     public static void main(String[] args) throws IOException {

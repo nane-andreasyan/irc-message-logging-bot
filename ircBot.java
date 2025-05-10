@@ -5,9 +5,12 @@ import java.time.LocalDateTime;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Scanner;
+import java.net.Socket;
+import java.util.*;
+import java.util.regex.*;
+import java.util.concurrent.*;
 
 public class ircBot {
-
 
     public static PrintWriter out;
     public static Scanner in;
@@ -15,7 +18,10 @@ public class ircBot {
     private static String NICKNAME = "IRCLogBot";
     public static String USERNAME = "IRCLogBot";
     public static String REALNAME = "IRCLogBot";
-    private static final String LOG_FILE = LOG_DIR + "/log_main.txt";
+    private static final Map<String, List<String>> logs = new ConcurrentHashMap<>();
+    private static final BlockingQueue<String> messageQueue = new LinkedBlockingQueue<>();
+    private static final ExecutorService threadPool = Executors.newCachedThreadPool();
+    private static final Map<String, String> pendingRequests = new ConcurrentHashMap<>();
 
     public static void connect() throws IOException {
         Scanner sc = new Scanner(System.in);
@@ -38,108 +44,50 @@ public class ircBot {
             }
         }
 
-        while(in.hasNext()) {
-            String message = in.nextLine();
-            System.out.println("<<<" + message);
-
-            if(message.startsWith("PING")) {
-                System.out.println("got a ping");
-                String content = message.substring(5);
-                write("PONG", content);
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("Shutting down...");
+            try {
+                write("QUIT", ":Bot shutting down");
+                if (out != null) out.close();
+                if (in != null) in.close();
+                threadPool.shutdown();
+            } catch (Exception e) {
+                e.printStackTrace();
             }
+        }));
 
-            if (message.contains(" 376 ") || message.contains(" 422 ")) {
-                System.out.println("Which channel would you like to join?");
-                String channel = sc.nextLine();
-                if (!channel.startsWith("#")) {
-                    channel = "#" + channel;
+        new Thread(() -> {
+            while (in.hasNext()) {
+                String message = in.nextLine();
+                messageQueue.add(message);
+            }
+        }).start();
+
+        while (true) {
+            try {
+                String message = messageQueue.take();
+                System.out.println("<<< " + message);
+
+                if (message.startsWith("PING")) {
+                    write("PONG", message.substring(5));
+                    continue;
                 }
-                write("JOIN", channel);
-                String finalChannel = channel;
-                new Thread(() -> {
-                    Scanner userInput = new Scanner(System.in);
-                    while (true) {
-                        String line = userInput.nextLine();
-                        if (line.startsWith("/join ")) {
-                            String newChannel = line.split(" ", 2)[1];
-                            if (!newChannel.startsWith("#")) {
-                                newChannel = "#" + newChannel;
-                            }
-                            write("JOIN", newChannel);
-                            System.out.println("Joined channel " + newChannel);
-                        } else if (line.equalsIgnoreCase("/part")) {
-                            write("PART", finalChannel);
-                            System.out.println("Left the channel " + finalChannel);
-                        } else if (line.equalsIgnoreCase("/quit")) {
-                            write("QUIT", ":Goodbye");
-                            System.exit(0);
-                        } else if (line.startsWith("/msg ")) {
-                            String[] tokens = line.split(" ", 3);
-                            if (tokens.length >= 3) {
-                                String recipient = tokens[1];
-                                String privateMessage = tokens[2];
-                                write("PRIVMSG", recipient + " :" + privateMessage);
-                                System.out.println("Sent private message to " + recipient + ": " + privateMessage);
-                            }
-                        } else {
-                            write("PRIVMSG", finalChannel + " :" + line);
-                        }
-                    }
-                }).start();
-            }
 
-            if (message.contains(" JOIN ")) {
-                String joiner = message.substring(1, message.indexOf("!"));
-                String channel = message.split("JOIN ")[1].substring(1);
-                if (!joiner.equalsIgnoreCase(nickname)) {
-                    logEvent(String.format("[%s] *** %s joined #%s", LocalDateTime.now(), joiner, channel));
-                }
-            }
-
-            if (message.contains(" PART ")) {
-                String leaver = message.substring(1, message.indexOf("!"));
-                String channel = message.split("PART ")[1].split(" ")[0];
-                if (!leaver.equalsIgnoreCase(nickname)) {
-                    logEvent(String.format("[%s] *** %s left #%s", LocalDateTime.now(), leaver, channel));
-                }
-            }
-
-            if (message.contains("PRIVMSG")) {
-                String[] parts = message.split(" ", 4);
-                if (parts.length >= 4) {
-                    String sender = parts[0].substring(1, parts[0].indexOf("!"));
-                    String target = parts[2];
-                    String msgText = message.split(":", 3)[2];
-
-                    if (target.startsWith("#")) {
-                        logEvent(String.format("[%s] <%s> (channel %s): %s", LocalDateTime.now(), sender, target, msgText));
-                    } else if (target.equalsIgnoreCase(nickname)) {
-                        System.out.println("Private message from " + sender + ": " + msgText);
-                        if (msgText.toLowerCase().startsWith("last ")) {
-                            handleLastNCommand(sender, msgText);
-                        }
+                if (message.contains("invite")) {
+                    Matcher matcher = Pattern.compile("#([^\\s]+)").matcher(message);
+                    if (matcher.find()) {
+                        write("JOIN", matcher.group(1));
                     }
                 }
-            }
 
-            if (message.contains(" QUIT ")) {
-                String quitter = message.substring(1, message.indexOf("!"));
-                String quitMessage = "";
-
-                int quitIndex = message.indexOf("QUIT :");
-                if (quitIndex != -1) {
-                    quitMessage = message.substring(quitIndex + 6).trim();
+                if (message.contains("PRIVMSG")) {
+                    handlePrivMsg(message);
                 }
 
-                if (!quitter.equalsIgnoreCase(nickname)) {
-                    logEvent(String.format("[%s] *** %s quit (%s)", LocalDateTime.now(), quitter, quitMessage));
-                }
+            } catch (InterruptedException e) {
+                e.printStackTrace();
             }
         }
-
-        in.close();
-        out.close();
-        socket.close();
     }
 
     private static void write(String command, String message) {
@@ -148,7 +96,6 @@ public class ircBot {
         out.print(serverMessage + "\r\n");
         out.flush();
     }
-
     private static void logEvent(String event, String channel) {
         String channelName = channel.replace("#", "");
         String logFilePath = LOG_DIR + "/log_" + channelName + ".txt";
@@ -160,6 +107,47 @@ public class ircBot {
             fw.write(logLine + "\n");
         } catch (IOException e) {
             System.err.println("Error writing the log for channel " + channelName + ": " + e.getMessage());
+        }
+    }
+    private static void handlePrivMsg(String message) {
+        String[] parts = message.split(" ", 4);
+        if (parts.length < 4) return;
+
+        String sender = parts[0].substring(1, parts[0].indexOf("!"));
+        String target = parts[2];
+        String msgText = message.split(":", 3)[2].trim();
+
+        boolean isPrivate = target.equalsIgnoreCase(NICKNAME);
+
+        if (target.startsWith("#")) {
+            logs.computeIfAbsent(target, k -> new ArrayList<>())
+                    .add(String.format("[%s] <%s>: %s", LocalDateTime.now(), sender, msgText));
+        }
+
+        if (!isPrivate && msgText.toLowerCase().contains(NICKNAME.toLowerCase())) {
+            write("PRIVMSG", sender + " :How many messages do you want?");
+            pendingRequests.put(sender, target);
+            return;
+        }
+
+        if (isPrivate && !pendingRequests.containsKey(sender)) {
+            write("PRIVMSG", sender + " :Please mention me in a channel before sending your request");
+        }
+
+        if (isPrivate && pendingRequests.containsKey(sender)) {
+            threadPool.submit(() -> {
+                try {
+                    int count = Integer.parseInt(msgText.trim());
+                    String channel = pendingRequests.remove(sender);
+                    List<String> channelLogs = logs.getOrDefault(channel, new ArrayList<>());
+                    int start = Math.max(0, channelLogs.size() - count);
+                    for (int i = start; i < channelLogs.size(); i++) {
+                        write("PRIVMSG", sender + " :" + channelLogs.get(i));
+                    }
+                } catch (NumberFormatException e) {
+                    write("PRIVMSG", sender + " :Invalid number format.");
+                }
+            });
         }
     }
 

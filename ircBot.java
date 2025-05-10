@@ -2,31 +2,23 @@ import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import java.io.*;
 import java.time.LocalDateTime;
-import java.net.Socket;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.Scanner;
 
 public class ircBot {
 
-    public static String nickname;
-    public static String username;
-    public static String realName;
+
     public static PrintWriter out;
     public static Scanner in;
     private static final String LOG_DIR = "logs";
+    private static String NICKNAME = "IRCLogBot";
+    public static String USERNAME = "IRCLogBot";
+    public static String REALNAME = "IRCLogBot";
     private static final String LOG_FILE = LOG_DIR + "/log_main.txt";
 
     public static void connect() throws IOException {
         Scanner sc = new Scanner(System.in);
-
-        System.out.print("Enter nickname:");
-        nickname = sc.nextLine();
-
-        System.out.print("Enter username:");
-        username = sc.nextLine();
-
-        System.out.print("Enter full name:");
-        realName = sc.nextLine();
 
         SSLSocketFactory factory = (SSLSocketFactory) SSLSocketFactory.getDefault();
         SSLSocket socket = (SSLSocket) factory.createSocket("irc.oftc.net", 6697);
@@ -35,8 +27,8 @@ public class ircBot {
         out = new PrintWriter(socket.getOutputStream(), true);
         in = new Scanner(socket.getInputStream());
 
-        write("NICK", nickname);
-        write("USER", username+" 0 * :"+realName);
+        write("NICK", NICKNAME);
+        write("USER", USERNAME+" 0 * :"+ REALNAME);
 
         File logDir = new File(LOG_DIR);
         if (!logDir.exists()) {
@@ -157,38 +149,53 @@ public class ircBot {
         out.flush();
     }
 
-    private static void logEvent(String event) {
-        try (FileWriter fw = new FileWriter(LOG_FILE, true)) {
-            fw.write(event + "\n");
+    private static void logEvent(String event, String channel) {
+        String channelName = channel.replace("#", "");
+        String logFilePath = LOG_DIR + "/log_" + channelName + ".txt";
+
+        String timestamp = "[" + LocalDateTime.now() + "]";
+        String logLine = String.format("%s %s", timestamp, event);
+
+        try (FileWriter fw = new FileWriter(logFilePath, true)) {
+            fw.write(logLine + "\n");
         } catch (IOException e) {
-            System.err.println("Error writing event log: " + e.getMessage());
+            System.err.println("Error writing the log for channel " + channelName + ": " + e.getMessage());
         }
     }
 
-    private static void handleLastNCommand(String sender, String msgText) {
-        try {
-            String[] parts = msgText.split(" ");
-            int n = Integer.parseInt(parts[1]);
+    private static void handleLastNCommand(String sender, int n, String channel) {
+        String sanitizedChannel = channel.replace("#", "");
+        String logFilePath = LOG_DIR + "/log_" + sanitizedChannel + ".txt";
 
-            LinkedList<String> lastLines = new LinkedList<>();
-            try (BufferedReader br = new BufferedReader(new FileReader(LOG_FILE))) {
-                String line;
-                while ((line = br.readLine()) != null) {
-                    lastLines.add(line);
-                    if (lastLines.size() > n) {
-                        lastLines.removeFirst();
-                    }
-                }
+        LinkedList<String> allLines = new LinkedList<>();
+
+        try (BufferedReader br = new BufferedReader(new FileReader(logFilePath))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                allLines.add(line);
             }
 
-            for (String logLine : lastLines) {
-                write("PRIVMSG", sender + " :" + logLine);
+            int available = allLines.size();
+            List<String> messagesToSend;
+            if (n >= available) {
+                messagesToSend = allLines;
+                write("PRIVMSG", sender + " :Warning: Requested " + n + " messages, but only " + available + " are available.");
+            } else {
+                messagesToSend = allLines.subList(available - n, available);
             }
 
-        } catch (Exception e) {
-            write("PRIVMSG", sender + " :Invalid last N request. Use: last N (where N is a number)");
+            StringBuilder combined = new StringBuilder("\n");
+            for (String logLine : messagesToSend) {
+                combined.append(logLine).append("\n");
+            }
+
+            write("PRIVMSG", sender + " :" + combined.toString().trim());
+
+        } catch (IOException e) {
+            write("PRIVMSG", sender + " :Could not read logs for channel " + channel);
         }
     }
+
 
     public static void main(String[] args) throws IOException {
         connect();

@@ -5,11 +5,16 @@ IRCLogBotAUA is a Java-based IRC bot that logs all messages from IRC channels it
 
 ### Usage
 
-1. Compile and run the bot:
+1. Compile and Run the Bot (using Makefile):
+
+To compile and run the IRC bot, simply use:
 
 ```
-javac ircBot.java
-java ircBot
+make
+```
+This will automatically compile `ircBot.java` and run it in one step. To clean up compiled files:
+```
+make clean
 ```
 
 The bot connects using static identity values:
